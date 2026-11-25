@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, esAborto, obtenerResumenDia } from '../api'
+import { esAborto, obtenerResumenDia } from '../api'
 import { formatearNumero } from '../formato'
 import type { ResumenDia } from '../types'
 
@@ -32,12 +32,7 @@ export function ModalResumen({ onCerrar }: Props) {
       .then((resumen) => setEstado({ tipo: 'ok', resumen }))
       .catch((e: unknown) => {
         if (esAborto(e)) return
-        const mensaje =
-          e instanceof ApiError && e.estado === 404
-            ? 'El servicio de resumen del día todavía no está disponible en el backend.'
-            : e instanceof Error
-              ? e.message
-              : 'Error al obtener el resumen.'
+        const mensaje = e instanceof Error ? e.message : 'Error al obtener el resumen.'
         setEstado({ tipo: 'error', mensaje })
       })
     return () => control.abort()

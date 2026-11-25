@@ -2,7 +2,7 @@
 
 Flujo: bytes -> texto -> filas validadas -> upsert en BD por ID_ALARMA.
 Las filas inválidas se rechazan individualmente (con línea y motivo) sin
-detener la importación del resto (decisión D8). Un archivo sin la cabecera
+detener la importación del resto. Un archivo sin la cabecera
 esperada se rechaza completo con `ArchivoInvalidoError`.
 """
 
@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.orm import Session
 
 from app.models import Alarma
@@ -23,7 +24,7 @@ COLUMNAS = ("ID_ALARMA", "2G", "3G", "4G", "FECHA_CREACION", "MUNICIPIO", "DEPAR
 
 VALORES_NOTIFICADA = {"S", "N"}
 
-# Rangos válidos (decisión D19): las tecnologías son porcentajes, con -100 = no disponible;
+# Rangos válidos: las tecnologías son porcentajes, con -100 = no disponible;
 # el ID debe caber en un entero de 64 bits con signo (límite de SQLite y PostgreSQL BIGINT).
 VALOR_TECNOLOGIA_MIN, VALOR_TECNOLOGIA_MAX = -100, 100
 ID_MAXIMO = 2**63 - 1
@@ -44,8 +45,12 @@ _PATRON_FECHA = re.compile(
     re.IGNORECASE,
 )
 
-# Tamaño de lote al consultar IDs existentes (SQLite limita los parámetros por consulta).
-_LOTE_CONSULTA = 500
+# Tamaños de lote: SQLite limita los parámetros por sentencia (999 en versiones antiguas).
+_LOTE_CONSULTA = 500  # 1 parámetro por ID
+_LOTE_ESCRITURA = 100  # 8 parámetros por fila
+
+# Upsert nativo de cada motor soportado (`INSERT ... ON CONFLICT DO UPDATE`).
+_INSERT_POR_MOTOR = {"sqlite": sqlite.insert, "postgresql": postgresql.insert}
 
 
 class ArchivoInvalidoError(ValueError):
@@ -226,6 +231,8 @@ def _convertir_fila(fila: list[str], posiciones: dict[str, int], columnas_espera
 def parsear_csv(contenido: bytes) -> ResultadoParseo:
     """Lee y valida el CSV completo. No toca la base de datos."""
     texto = decodificar(contenido)
+    # Mismos cortes de línea que cuenta el lector CSV (splitlines() también corta en  , \x1c…).
+    lineas_texto = re.split(r"\r\n|\r|\n", texto)
     lector = csv.reader(io.StringIO(texto, newline=""), delimiter=SEPARADOR, quotechar='"')
 
     try:
@@ -254,13 +261,16 @@ def parsear_csv(contenido: bytes) -> ResultadoParseo:
         if not any(celda.strip() for celda in fila):
             continue  # línea en blanco
 
-        # Una comilla sin cerrar hace que el lector absorba las líneas siguientes en un solo campo.
+        # Una comilla sin cerrar hace que el lector absorba las líneas siguientes en un solo campo
+        # (incluso hasta el final del archivo). Cada línea absorbida cuenta como rechazada.
         if linea_final > linea:
             resultado.errores.append(
-                ErrorFila(
-                    linea,
-                    f"comilla sin cerrar o salto de línea dentro de un campo: se descartan las líneas {linea} a {linea_final}",
-                )
+                ErrorFila(linea, f"comilla sin cerrar o salto de línea dentro de un campo (líneas {linea} a {linea_final})")
+            )
+            resultado.errores.extend(
+                ErrorFila(n, f"descartada: absorbida por la comilla sin cerrar de la línea {linea}")
+                for n in range(linea + 1, linea_final + 1)
+                if lineas_texto[n - 1].strip()
             )
             continue
 
@@ -287,29 +297,39 @@ def parsear_csv(contenido: bytes) -> ResultadoParseo:
 # --------------------------------------------------------------------------- #
 
 
-def guardar_alarmas(sesion: Session, registros: list[AlarmaCSV]) -> tuple[int, int]:
-    """Inserta o actualiza por ID_ALARMA (decisión D7). Devuelve (insertadas, actualizadas)."""
-    ids = [r.id_alarma for r in registros]
-    existentes: dict[int, Alarma] = {}
+def _ids_existentes(sesion: Session, ids: list[int]) -> set[int]:
+    existentes: set[int] = set()
     for inicio in range(0, len(ids), _LOTE_CONSULTA):
         lote = ids[inicio : inicio + _LOTE_CONSULTA]
-        for alarma in sesion.scalars(select(Alarma).where(Alarma.id_alarma.in_(lote))):
-            existentes[alarma.id_alarma] = alarma
+        existentes.update(sesion.scalars(select(Alarma.id_alarma).where(Alarma.id_alarma.in_(lote))))
+    return existentes
 
-    insertadas = actualizadas = 0
-    for registro in registros:
-        datos = vars(registro)
-        alarma = existentes.get(registro.id_alarma)
-        if alarma is None:
-            sesion.add(Alarma(**datos))
-            insertadas += 1
-        else:
-            for campo, valor in datos.items():
-                setattr(alarma, campo, valor)
-            actualizadas += 1
+
+def guardar_alarmas(sesion: Session, registros: list[AlarmaCSV]) -> tuple[int, int]:
+    """Inserta o actualiza por ID_ALARMA. Devuelve (insertadas, actualizadas).
+
+    La escritura es un upsert atómico (`INSERT ... ON CONFLICT DO UPDATE`), así dos importaciones
+    simultáneas con los mismos IDs no chocan. Los contadores salen de una consulta previa: si hay
+    importaciones simultáneas pueden ser aproximados, pero los datos quedan siempre bien guardados.
+    """
+    if not registros:
+        return 0, 0
+
+    existentes = _ids_existentes(sesion, [r.id_alarma for r in registros])
+    insert = _INSERT_POR_MOTOR[sesion.get_bind().dialect.name]
+
+    for inicio in range(0, len(registros), _LOTE_ESCRITURA):
+        filas = [vars(r) for r in registros[inicio : inicio + _LOTE_ESCRITURA]]
+        sentencia = insert(Alarma).values(filas)
+        sentencia = sentencia.on_conflict_do_update(
+            index_elements=[Alarma.id_alarma],
+            set_={campo: sentencia.excluded[campo] for campo in filas[0] if campo != "id_alarma"},
+        )
+        sesion.execute(sentencia)
 
     sesion.commit()
-    return insertadas, actualizadas
+    actualizadas = len(existentes)
+    return len(registros) - actualizadas, actualizadas
 
 
 def importar_csv(sesion: Session, contenido: bytes) -> ResultadoImportacion:

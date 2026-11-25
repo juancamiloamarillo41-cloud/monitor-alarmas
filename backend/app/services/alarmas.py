@@ -1,7 +1,7 @@
 """Consulta de alarmas clasificadas en un momento dado.
 
-El nivel depende del tiempo transcurrido, así que se calcula al consultar
-(decisión D6) y el filtro por nivel se aplica en Python después de clasificar.
+El nivel depende del tiempo transcurrido, así que no se guarda: se calcula al
+consultar, y el filtro por nivel se aplica en Python después de clasificar.
 """
 
 from dataclasses import dataclass

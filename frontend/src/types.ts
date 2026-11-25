@@ -1,4 +1,4 @@
-/** Tipos del contrato de la API (ver docs/ANALISIS_Y_PLAN.md §6). */
+/** Tipos del contrato de la API (las respuestas del backend). */
 
 export type NivelAlerta = 'NORMAL' | 'WARN' | 'CRITICO'
 

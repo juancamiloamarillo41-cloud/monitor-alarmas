@@ -3,7 +3,7 @@
 Funciones puras (sin base de datos ni reloj del sistema): el momento actual se
 recibe como parámetro para que el resultado sea determinista y fácil de probar.
 
-Regla (ver docs/ANALISIS_Y_PLAN.md, decisiones D1–D4):
+Regla:
 
 - Una tecnología (2G, 3G, 4G) está *disponible* si su valor es >= 0.
 - Condiciones base: al menos una tecnología disponible, TODAS las disponibles
@@ -45,7 +45,7 @@ def cumple_condiciones_base(tecnologia_2g: int, tecnologia_3g: int, tecnologia_4
 
 
 def calcular_duracion(fecha_creacion: datetime, ahora: datetime) -> timedelta:
-    """Tiempo transcurrido desde la creación. Una fecha futura cuenta como 0 (D4).
+    """Tiempo transcurrido desde la creación. Una fecha futura cuenta como 0.
 
     Ambas fechas deben ser del mismo tipo (las dos con zona horaria o las dos sin ella).
     """
