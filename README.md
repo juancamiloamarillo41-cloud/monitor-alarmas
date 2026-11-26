@@ -42,6 +42,12 @@ Si no las cumple, la alarma es NORMAL. Las fechas se interpretan en la zona hora
 
 ## Puesta en marcha
 
+### Inicio rápido en Windows
+
+Doble clic en **`iniciar.bat`**. La primera vez instala lo necesario (entorno de Python, dependencias y archivos `.env`); después levanta el backend y el frontend en dos ventanas y abre http://localhost:5173. Para detenerlo, cierra esas dos ventanas.
+
+### Paso a paso
+
 Se necesitan dos terminales, una para cada proyecto.
 
 ### Backend (http://localhost:8000)
